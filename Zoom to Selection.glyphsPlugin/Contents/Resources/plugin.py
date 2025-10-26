@@ -153,26 +153,34 @@ class ZoomToSelection(GeneralPlugin):
 
         # 如果寬度或高度為零,使用最小值計算 scale
         MIN_SIZE = 100  # font units
+        PADDING = 2  # 邊距倍數
 
         if selWidth == 0 and selHeight == 0:
             # 單點選取:使用固定縮放
             targetSize = MIN_SIZE
+            newScale = min(viewPort.size.width, viewPort.size.height) / targetSize
+
         elif selWidth == 0:
-            # 垂直線:使用高度
-            targetSize = selHeight * 1.25
+            # 垂直線:基於視口高度計算
+            targetSize = selHeight * PADDING
+            newScale = viewPort.size.height / targetSize
+
         elif selHeight == 0:
-            # 水平線:使用寬度
-            targetSize = selWidth * 1.25
+            # 水平線:基於視口寬度計算
+            targetSize = selWidth * PADDING
+            newScale = viewPort.size.width / targetSize
+
         else:
-            # 正常選取:使用較大維度
-            targetSize = max(selWidth, selHeight) * 1.25
+            # 正常選取:分別計算寬高的 scale，取較小值確保完全可見
+            targetWidth = selWidth * PADDING
+            targetHeight = selHeight * PADDING
+            scaleX = viewPort.size.width / targetWidth
+            scaleY = viewPort.size.height / targetHeight
+            newScale = min(scaleX, scaleY)
 
         # 計算選取中心點(font units)
         centerX = bounds.origin.x + selWidth / 2
         centerY = bounds.origin.y + selHeight / 2
-
-        # 計算所需 scale
-        newScale = min(viewPort.size.width, viewPort.size.height) / targetSize
 
         # 儲存資訊供延遲執行使用
         self._zoomCenterX = centerX
