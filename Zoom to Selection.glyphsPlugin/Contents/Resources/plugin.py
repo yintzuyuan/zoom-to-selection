@@ -58,61 +58,96 @@ class ZoomToSelection(GeneralPlugin):
     def zoomToSelection_(self, sender):
         """縮放視圖以適應選取範圍"""
         try:
+            # 第一階段：設定 scale 和儲存必要資訊
+            success = self._setScale()
+            if not success:
+                return
+
+            # 第二階段：延遲設定 viewPort
+            # 使用 performSelector 延遲執行，讓 selectedLayerOrigin 有時間更新
+            self.performSelector_withObject_afterDelay_(
+                "setViewPortDelayed:",
+                None,
+                0.01  # 延遲 10ms
+            )
+
+        except Exception as e:
+            print(f"Zoom to Selection Error: {e}")
+            import traceback
+            print(traceback.format_exc())
+
+    @objc.python_method
+    def _setScale(self):
+        """第一階段：設定 scale 並儲存必要資訊"""
+        tab = Glyphs.font.currentTab
+        if not tab:
+            return False
+
+        layer = tab.activeLayer()
+        if not layer:
+            return False
+
+        # 使用 boundsOfSelection() 方法
+        bounds = layer.boundsOfSelection()
+        if not bounds:
+            return False
+
+        # 取得視口大小
+        viewPort = tab.viewPort
+
+        # 處理零尺寸選取
+        selWidth = bounds.size.width
+        selHeight = bounds.size.height
+
+        # 如果寬度或高度為零,使用最小值計算 scale
+        MIN_SIZE = 100  # font units
+
+        if selWidth == 0 and selHeight == 0:
+            # 單點選取:使用固定縮放
+            targetSize = MIN_SIZE
+        elif selWidth == 0:
+            # 垂直線:使用高度
+            targetSize = selHeight * 1.25
+        elif selHeight == 0:
+            # 水平線:使用寬度
+            targetSize = selWidth * 1.25
+        else:
+            # 正常選取:使用較大維度
+            targetSize = max(selWidth, selHeight) * 1.25
+
+        # 計算選取中心點(font units)
+        centerX = bounds.origin.x + selWidth / 2
+        centerY = bounds.origin.y + selHeight / 2
+
+        # 計算所需 scale
+        newScale = min(viewPort.size.width, viewPort.size.height) / targetSize
+
+        # 儲存資訊供延遲執行使用
+        self._zoomCenterX = centerX
+        self._zoomCenterY = centerY
+        self._zoomScale = newScale
+
+        # 設定 scale
+        tab.scale = newScale
+
+        return True
+
+    def setViewPortDelayed_(self, _):
+        """第二階段：延遲設定 viewPort（在 selectedLayerOrigin 更新後）"""
+        try:
             tab = Glyphs.font.currentTab
             if not tab:
-                return
-
-            layer = tab.activeLayer()
-            if not layer:
-                return
-
-            # 使用 boundsOfSelection() 方法
-            bounds = layer.boundsOfSelection()
-            if not bounds:
                 return
 
             # 取得視口大小
             viewPort = tab.viewPort
 
-            # 處理零尺寸選取
-            selWidth = bounds.size.width
-            selHeight = bounds.size.height
-
-            # 如果寬度或高度為零,使用最小值計算 scale
-            MIN_SIZE = 100  # font units
-
-            if selWidth == 0 and selHeight == 0:
-                # 單點選取:使用固定縮放
-                targetSize = MIN_SIZE
-            elif selWidth == 0:
-                # 垂直線:使用高度
-                targetSize = selHeight * 1.25
-            elif selHeight == 0:
-                # 水平線:使用寬度
-                targetSize = selWidth * 1.25
-            else:
-                # 正常選取:使用較大維度
-                targetSize = max(selWidth, selHeight) * 1.25
-
-            # 計算選取中心點(font units)
-            centerX = bounds.origin.x + selWidth / 2
-            centerY = bounds.origin.y + selHeight / 2
-
-            # 計算所需 scale
-            newScale = min(viewPort.size.width, viewPort.size.height) / targetSize
-
-            # 設定 scale
-            tab.scale = newScale
-
-            # 觸發 runloop,避免與 Glyphs 自動滾動衝突
-            print()
-
-            # 在新 scale 下重新讀取 selectedLayerOrigin
+            # 讀取更新後的 selectedLayerOrigin
             origin = tab.selectedLayerOrigin
 
             # 計算選取中心在 view coordinates 的位置
-            centerViewX = origin.x + (centerX * newScale)
-            centerViewY = origin.y + (centerY * newScale)
+            centerViewX = origin.x + (self._zoomCenterX * self._zoomScale)
+            centerViewY = origin.y + (self._zoomCenterY * self._zoomScale)
 
             # 設定 viewPort
             tab.viewPort = NSMakeRect(
@@ -123,7 +158,7 @@ class ZoomToSelection(GeneralPlugin):
             )
 
         except Exception as e:
-            print(f"Zoom to Selection Error: {e}")
+            print(f"Zoom to Selection (Delayed) Error: {e}")
             import traceback
             print(traceback.format_exc())
 
