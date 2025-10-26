@@ -46,7 +46,7 @@ This is a plugin developed for [Glyphs font editing software](http://glyphsapp.c
 
 ### Features
 
-Compared to designers of other writing systems, CJK designers often face a unique challenge: a single Chinese glyph with complex strokes may contain dozens of nodes or components. When making fine adjustments, the built-in "Zoom to Layer" or "Zoom to Actual Size" functions often fail to provide sufficient viewport coverage for observing details.
+Compared to designers of other writing systems, CJK designers often face a unique challenge: a single Chinese glyph with complex strokes may contain dozens of nodes or components. When making fine adjustments, the built-in "Zoom to Active Layer" or "Zoom to Actual Size" functions often fail to provide sufficient viewport coverage for observing details.
 
 This plugin provides quick zooming to the selected range, enabling CJK designers to focus more efficiently on detailed adjustments and significantly improving workflow efficiency.
 
