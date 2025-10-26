@@ -77,6 +77,53 @@ class ZoomToSelection(GeneralPlugin):
             print(traceback.format_exc())
 
     @objc.python_method
+    def _isValidBounds(self, bounds):
+        """檢查邊界是否有效（排除異常值）"""
+        if not bounds:
+            return False
+
+        # 檢查是否有異常大的值（> 1e10）或負數尺寸
+        if (abs(bounds.origin.x) > 1e10 or
+            abs(bounds.origin.y) > 1e10 or
+            bounds.size.width < 0 or
+            bounds.size.height < 0):
+            return False
+
+        return True
+
+    @objc.python_method
+    def _calculateSelectionBounds(self, layer):
+        """手動計算選取範圍的邊界（支援 GSHandle/extra nodes）"""
+        selection = layer.selection
+        if not selection or len(selection) == 0:
+            return None
+
+        # 收集所有選取項目的座標
+        x_coords = []
+        y_coords = []
+
+        for item in selection:
+            # GSHandle (extra nodes) 使用 .position
+            if hasattr(item, 'position'):
+                x_coords.append(item.position.x)
+                y_coords.append(item.position.y)
+            # GSNode 使用 .x 和 .y
+            elif hasattr(item, 'x') and hasattr(item, 'y'):
+                x_coords.append(item.x)
+                y_coords.append(item.y)
+
+        if not x_coords:
+            return None
+
+        # 計算邊界框
+        min_x = min(x_coords)
+        max_x = max(x_coords)
+        min_y = min(y_coords)
+        max_y = max(y_coords)
+
+        return NSMakeRect(min_x, min_y, max_x - min_x, max_y - min_y)
+
+    @objc.python_method
     def _setScale(self):
         """第一階段：設定 scale 並儲存必要資訊"""
         tab = Glyphs.font.currentTab
@@ -87,8 +134,13 @@ class ZoomToSelection(GeneralPlugin):
         if not layer:
             return False
 
-        # 使用 boundsOfSelection() 方法
-        bounds = layer.boundsOfSelection()
+        # 嘗試使用官方 API
+        bounds = layer.selectionBounds
+
+        # 如果 API 返回無效值（如選取 extra nodes），手動計算
+        if not self._isValidBounds(bounds):
+            bounds = self._calculateSelectionBounds(layer)
+
         if not bounds:
             return False
 
