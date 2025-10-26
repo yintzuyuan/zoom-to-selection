@@ -33,7 +33,9 @@ class ZoomToSelection(GeneralPlugin):
     def settings(self):
         self.name = Glyphs.localize({
             "en": "Zoom to Selection",
-            "zh-Hant": "縮放至選取範圍",
+            "zh-Hant": "拉至選取範圍",
+            "zh-Hans": "缩放至所选项",
+            "ja": "選択範囲にズーム",
         })
 
     @objc.python_method
