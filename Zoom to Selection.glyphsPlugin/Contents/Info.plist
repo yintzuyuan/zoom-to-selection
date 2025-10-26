@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>en</string>
+	<string>zh-Hant</string>
 	<key>CFBundleExecutable</key>
 	<string>plugin</string>
 	<key>CFBundleIdentifier</key>
@@ -13,15 +13,15 @@
 	<key>CFBundleName</key>
 	<string>Zoom to Selection</string>
 	<key>CFBundleShortVersionString</key>
-	<string>____BundleVersionString____</string> <!-- 1.0 -->
+	<string>1.0</string> <!-- 1.0 -->
 	<key>CFBundleVersion</key>
-	<string>____BundleVersion____</string> <!-- 123 -->
+	<string>1</string> <!-- 123 -->
 	<key>UpdateFeedURL</key>
-	<string>____OnlineUrlToThisPlist____</string>
+	<string>https://github.com/yintzuyuan/zoom-to-selection/raw/main/Zoom to Selection.glyphsPlugin/Contents/Info.plist</string>
 	<key>productPageURL</key>
-	<string>____ProductPageURL____</string>
+	<string>https://github.com/yintzuyuan/zoom-to-selection</string>
 	<key>productReleaseNotes</key>
-	<string>____LatestReleaseNotes____</string>
+	<string>initial commit</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright, YinTzuYuan, 2025</string>
 	<key>NSPrincipalClass</key>
