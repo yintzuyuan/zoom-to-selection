@@ -8,7 +8,7 @@
 
 ## 繁體中文
 
-這是一個為 [Glyphs 字型編輯軟體](http://glyphsapp.com/) 開發的外掛。它在「顯示」選單中建立一個選項，讓使用者能夠將編輯畫面快速拉近至選取範圍。
+這是一個為 [Glyphs 字型編輯軟體](http://glyphsapp.com/) 開發的外掛。它在「顯示」選單中建立一個指令，讓使用者能夠將編輯畫面快速拉近至選取範圍。
 
 ### 安裝與使用
 
@@ -35,7 +35,7 @@
 
 ## English
 
-This is a plugin developed for [Glyphs font editing software](http://glyphsapp.com/). It adds an option to the "View" menu that allows users to quickly zoom the editing canvas to the selected range.
+This is a plugin developed for [Glyphs font editing software](http://glyphsapp.com/). It adds an command to the "View" menu that allows users to quickly zoom the editing canvas to the selected range.
 
 ### Installation and Usage
 
