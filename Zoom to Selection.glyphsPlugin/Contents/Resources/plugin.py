@@ -184,9 +184,11 @@ class ZoomToSelectionMenuItem(NSMenuItem):
         if not layer:
             return False
 
-        # 檢查是否有選取內容 (允許零尺寸選取)
-        selectionBounds = layer.boundsOfSelection()
-        if not selectionBounds:
+        # 檢查是否真的有選取內容
+        # layer.selection 返回選取的節點/元件列表
+        # 無選取(沒選任何東西) → 禁用
+        # 零尺寸選取(選取一個點) → 啟用
+        if not layer.selection or len(layer.selection) == 0:
             return False
 
         return True
