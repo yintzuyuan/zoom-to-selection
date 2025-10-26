@@ -124,6 +124,32 @@ class ZoomToSelection(GeneralPlugin):
         return NSMakeRect(min_x, min_y, max_x - min_x, max_y - min_y)
 
     @objc.python_method
+    def _calculateDynamicPadding(self, selWidth, selHeight):
+        """根據選取範圍大小動態計算 PADDING
+
+        選取範圍較大時返回較小的 PADDING（1.5）
+        選取範圍較小時返回較大的 PADDING（2.0）
+        中間範圍線性漸變
+        """
+        # 使用較大維度作為判斷依據
+        selectionSize = max(selWidth, selHeight)
+
+        # 參數設定
+        MIN_PADDING = 1.5  # 大範圍時的邊距
+        MAX_PADDING = 3.0  # 小範圍時的邊距
+        SMALL_SIZE = 300   # 小範圍臨界值（font units）
+        LARGE_SIZE = 800   # 大範圍臨界值（font units）
+
+        if selectionSize <= SMALL_SIZE:
+            return MAX_PADDING
+        elif selectionSize >= LARGE_SIZE:
+            return MIN_PADDING
+        else:
+            # 線性漸變
+            ratio = (selectionSize - SMALL_SIZE) / (LARGE_SIZE - SMALL_SIZE)
+            return MAX_PADDING - (MAX_PADDING - MIN_PADDING) * ratio
+
+    @objc.python_method
     def _setScale(self):
         """第一階段：設定 scale 並儲存必要資訊"""
         tab = Glyphs.font.currentTab
@@ -151,29 +177,31 @@ class ZoomToSelection(GeneralPlugin):
         selWidth = bounds.size.width
         selHeight = bounds.size.height
 
-        # 如果寬度或高度為零,使用最小值計算 scale
+        # 最小尺寸參數
         MIN_SIZE = 100  # font units
-        PADDING = 2  # 邊距倍數
 
         if selWidth == 0 and selHeight == 0:
-            # 單點選取:使用固定縮放
+            # 單點選取:使用固定縮放和最大 PADDING
             targetSize = MIN_SIZE
             newScale = min(viewPort.size.width, viewPort.size.height) / targetSize
 
         elif selWidth == 0:
-            # 垂直線:基於視口高度計算
-            targetSize = selHeight * PADDING
+            # 垂直線:基於視口高度計算，使用動態 PADDING
+            padding = self._calculateDynamicPadding(0, selHeight)
+            targetSize = selHeight * padding
             newScale = viewPort.size.height / targetSize
 
         elif selHeight == 0:
-            # 水平線:基於視口寬度計算
-            targetSize = selWidth * PADDING
+            # 水平線:基於視口寬度計算，使用動態 PADDING
+            padding = self._calculateDynamicPadding(selWidth, 0)
+            targetSize = selWidth * padding
             newScale = viewPort.size.width / targetSize
 
         else:
             # 正常選取:分別計算寬高的 scale，取較小值確保完全可見
-            targetWidth = selWidth * PADDING
-            targetHeight = selHeight * PADDING
+            padding = self._calculateDynamicPadding(selWidth, selHeight)
+            targetWidth = selWidth * padding
+            targetHeight = selHeight * padding
             scaleX = viewPort.size.width / targetWidth
             scaleY = viewPort.size.height / targetHeight
             newScale = min(scaleX, scaleY)
