@@ -8,7 +8,7 @@
 
 ## 繁體中文
 
-這是一個為 [Glyphs 字型編輯軟體](http://glyphsapp.com/) 開發的外掛。它在「顯示」選單中建立一個選項，讓使用者能夠將編輯畫面快速拉近至選取範圍。
+這是一個為 [Glyphs 字型編輯軟體](http://glyphsapp.com/) 開發的外掛。它在「顯示」選單中建立一個指令，讓使用者能夠將編輯畫面快速拉近至選取範圍。
 
 ### 安裝與使用
 
@@ -35,7 +35,7 @@
 
 ## English
 
-This is a plugin developed for [Glyphs font editing software](http://glyphsapp.com/). It adds an option to the "View" menu that allows users to quickly zoom the editing canvas to the selected range.
+This is a plugin developed for [Glyphs font editing software](http://glyphsapp.com/). It adds an command to the "View" menu that allows users to quickly zoom the editing canvas to the selected range.
 
 ### Installation and Usage
 
@@ -46,7 +46,7 @@ This is a plugin developed for [Glyphs font editing software](http://glyphsapp.c
 
 ### Features
 
-Compared to designers of other writing systems, CJK designers often face a unique challenge: a single Chinese glyph with complex strokes may contain dozens of nodes or components. When making fine adjustments, the built-in "Zoom to Layer" or "Zoom to Actual Size" functions often fail to provide sufficient viewport coverage for observing details.
+Compared to designers of other writing systems, CJK designers often face a unique challenge: a single Chinese glyph with complex strokes may contain dozens of nodes or components. When making fine adjustments, the built-in "Zoom to Active Layer" or "Zoom to Actual Size" functions often fail to provide sufficient viewport coverage for observing details.
 
 This plugin provides quick zooming to the selected range, enabling CJK designers to focus more efficiently on detailed adjustments and significantly improving workflow efficiency.
 
