@@ -126,6 +126,93 @@ class ZoomToSelection(GeneralPlugin):
         return NSMakeRect(min_x, min_y, max_x - min_x, max_y - min_y)
 
     @objc.python_method
+    def _calculateTextSelectionBounds(self, tab):
+        """計算文字選取範圍的邊界（Text Tool 模式）"""
+        print("\n=== 開始計算文字選取邊界 ===")
+
+        # 使用 selectedLayers 屬性（不是方法）自動處理字符→字形映射
+        try:
+            selected_layers = tab.selectedLayers  # 注意：這是屬性，不是方法
+            print("📍 使用 tab.selectedLayers 屬性")
+            print(f"   返回 {len(selected_layers) if selected_layers else 0} 個圖層")
+
+            if not selected_layers or len(selected_layers) == 0:
+                print("❌ selectedLayers 返回空列表")
+                return None
+
+            # 顯示選取的圖層資訊
+            for idx, layer in enumerate(selected_layers[:5]):  # 只顯示前5個
+                layer_name = getattr(layer.parent, 'name', 'N/A') if hasattr(layer, 'parent') else 'N/A'
+                bounds = layer.bounds
+                print(f"   [{idx}] 字形={layer_name}, bounds={bounds}")
+
+        except Exception as e:
+            print(f"❌ selectedLayers 失敗: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return None
+
+        # 使用累積寬度計算實際排版邊界
+        print(f"\n📏 開始合併邊界（使用累積寬度）:")
+        x_offset = 0  # 累積的 X 偏移（文字排版位置）
+        min_x = None
+        max_x = None
+        min_y = None
+        max_y = None
+
+        for i, layer in enumerate(selected_layers):
+            bounds = layer.bounds
+            layer_width = layer.width
+
+            print(f"   圖層 {i}: width={layer_width:.1f}, x_offset={x_offset:.1f}")
+
+            if not bounds or not self._isValidBounds(bounds):
+                print(f"      ⚠️  沒有有效 bounds，跳過但計入 width")
+                x_offset += layer_width
+                continue
+
+            # 計算當前圖層在排版中的實際 X 位置
+            # bounds.origin.x 是相對於圖層原點的偏移
+            layer_min_x = x_offset + bounds.origin.x
+            layer_max_x = x_offset + bounds.origin.x + bounds.size.width
+            layer_min_y = bounds.origin.y
+            layer_max_y = bounds.origin.y + bounds.size.height
+
+            print(f"      實際 x=[{layer_min_x:.1f}, {layer_max_x:.1f}], y=[{layer_min_y:.1f}, {layer_max_y:.1f}]")
+
+            # 更新總邊界
+            if min_x is None:
+                min_x = layer_min_x
+                max_x = layer_max_x
+                min_y = layer_min_y
+                max_y = layer_max_y
+                print(f"      → 初始化邊界")
+            else:
+                old_min_x, old_max_x = min_x, max_x
+                min_x = min(min_x, layer_min_x)
+                max_x = max(max_x, layer_max_x)
+                min_y = min(min_y, layer_min_y)
+                max_y = max(max_y, layer_max_y)
+                if min_x != old_min_x or max_x != old_max_x:
+                    print(f"      → 更新邊界: x=[{min_x:.1f}, {max_x:.1f}]")
+
+            # 更新累積偏移
+            x_offset += layer_width
+
+        if min_x is None:
+            print("❌ 沒有有效的圖層邊界")
+            return None
+
+        result = NSMakeRect(min_x, min_y, max_x - min_x, max_y - min_y)
+        print(f"\n✅ 最終合併邊界:")
+        print(f"   origin=({min_x:.1f}, {min_y:.1f})")
+        print(f"   size=({max_x - min_x:.1f}, {max_y - min_y:.1f})")
+        print(f"   總寬度（累積）={x_offset:.1f}")
+        print("=== 計算完成 ===\n")
+
+        return result
+
+    @objc.python_method
     def _calculateDynamicPadding(self, selWidth, selHeight):
         """根據選取範圍大小動態計算 PADDING
 
@@ -158,16 +245,22 @@ class ZoomToSelection(GeneralPlugin):
         if not tab:
             return False
 
-        layer = tab.activeLayer()
-        if not layer:
-            return False
+        # 檢查是否為文字選取模式（Text Tool）
+        # 優先檢查，因為在文字模式時 activeLayer 可能為 None
+        if hasattr(tab, 'textRange') and tab.textRange > 0:
+            bounds = self._calculateTextSelectionBounds(tab)
+        else:
+            # 節點選取模式（Edit Tool）
+            layer = tab.activeLayer()
+            if not layer:
+                return False
 
-        # 嘗試使用官方 API
-        bounds = layer.selectionBounds
+            # 嘗試使用官方 API
+            bounds = layer.selectionBounds
 
-        # 如果 API 返回無效值（如選取 extra nodes），手動計算
-        if not self._isValidBounds(bounds):
-            bounds = self._calculateSelectionBounds(layer)
+            # 如果 API 返回無效值（如選取 extra nodes），手動計算
+            if not self._isValidBounds(bounds):
+                bounds = self._calculateSelectionBounds(layer)
 
         if not bounds:
             return False
@@ -232,12 +325,20 @@ class ZoomToSelection(GeneralPlugin):
             # 取得視口大小
             viewPort = tab.viewPort
 
-            # 讀取更新後的 selectedLayerOrigin
+            # 統一使用 selectedLayerOrigin（文字模式和節點模式都適用）
             origin = tab.selectedLayerOrigin
 
+            print("\n📍 設定 viewport 定位")
+            print(f"   selectedLayerOrigin=({origin.x:.1f}, {origin.y:.1f})")
+            print(f"   選取中心點 (font units)=({self._zoomCenterX:.1f}, {self._zoomCenterY:.1f})")
+            print(f"   scale={self._zoomScale:.3f}")
+
             # 計算選取中心在 view coordinates 的位置
+            # 統一的座標轉換公式（兩種模式都適用）
             centerViewX = origin.x + (self._zoomCenterX * self._zoomScale)
             centerViewY = origin.y + (self._zoomCenterY * self._zoomScale)
+
+            print(f"   view 座標中心=({centerViewX:.1f}, {centerViewY:.1f})")
 
             # 設定 viewPort
             tab.viewPort = NSMakeRect(
@@ -246,6 +347,8 @@ class ZoomToSelection(GeneralPlugin):
                 viewPort.size.width,
                 viewPort.size.height
             )
+
+            print(f"✅ viewPort 已設定: x={centerViewX - viewPort.size.width / 2:.1f}, y={centerViewY - viewPort.size.height / 2:.1f}\n")
 
         except Exception as e:
             print(f"Zoom to Selection (Delayed) Error: {e}")
@@ -270,11 +373,16 @@ class ZoomToSelectionMenuItem(NSMenuItem):
         if not tab:
             return False
 
+        # 檢查文字選取（Text Tool 模式）
+        # 優先檢查，因為在文字模式時 activeLayer 可能為 None
+        if hasattr(tab, 'textRange') and tab.textRange > 0:
+            return True
+
+        # 檢查節點選取（Edit Tool 模式）
         layer = tab.activeLayer()
         if not layer:
             return False
 
-        # 檢查是否真的有選取內容
         # layer.selection 返回選取的節點/元件列表
         # 無選取(沒選任何東西) → 禁用
         # 零尺寸選取(選取一個點) → 啟用
