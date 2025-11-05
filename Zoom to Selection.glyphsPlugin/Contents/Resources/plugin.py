@@ -81,7 +81,8 @@ class ZoomToSelection(GeneralPlugin):
     @objc.python_method
     def _isValidBounds(self, bounds):
         """檢查邊界是否有效（排除異常值）"""
-        if not bounds:
+        # 檢查是否為 None 或 callable（換行符號的 bounds 是方法）
+        if not bounds or callable(bounds):
             return False
 
         # 檢查是否有異常大的值（> 1e10）或負數尺寸
@@ -92,6 +93,125 @@ class ZoomToSelection(GeneralPlugin):
             return False
 
         return True
+
+    @objc.python_method
+    def _calculateSingleLineBounds(self, selected_layers):
+        """計算單行選取的邊界
+
+        Args:
+            selected_layers: 選取的 layers
+
+        Returns:
+            NSRect: 選取範圍的邊界
+        """
+        # 收集有效的 bounds 並計算選取寬度
+        valid_bounds = []
+        selection_width = 0
+
+        for layer in selected_layers:
+            bounds = layer.bounds
+
+            # 跳過換行符號
+            if callable(bounds):
+                continue
+
+            if bounds and self._isValidBounds(bounds):
+                valid_bounds.append(bounds)
+                selection_width += layer.width
+
+        if not valid_bounds:
+            return None
+
+        # 計算 X 範圍：使用第一個字符的 bounds.origin.x（相對座標）
+        min_x = valid_bounds[0].origin.x
+
+        # 計算 Y 範圍
+        all_y_coords = []
+        for bounds in valid_bounds:
+            all_y_coords.append(bounds.origin.y)
+            all_y_coords.append(bounds.origin.y + bounds.size.height)
+
+        min_y = min(all_y_coords)
+        max_y = max(all_y_coords)
+        height = max_y - min_y
+
+        return NSMakeRect(min_x, min_y, selection_width, height)
+
+    @objc.python_method
+    def _calculateMultiLineBounds(self, selected_layers, edit_view_width, selection_width):
+        """計算跨行選取的邊界
+
+        Args:
+            selected_layers: 選取的 layers
+            edit_view_width: 編輯器寬度
+            selection_width: 選取範圍的總寬度
+
+        Returns:
+            NSRect: 選取範圍的邊界
+        """
+        # 收集有效的 bounds（跳過換行符號）
+        valid_bounds = []
+        for layer in selected_layers:
+            bounds = layer.bounds
+
+            # 跳過換行符號
+            if callable(bounds):
+                continue
+
+            if bounds and self._isValidBounds(bounds):
+                valid_bounds.append(bounds)
+
+        if not valid_bounds:
+            return None
+
+        # 計算選取字符的實際 X 和 Y 範圍
+        all_x_coords = []
+        all_y_coords = []
+
+        for bounds in valid_bounds:
+            # 收集 X 座標
+            all_x_coords.append(bounds.origin.x)
+            all_x_coords.append(bounds.origin.x + bounds.size.width)
+            # 收集 Y 座標
+            all_y_coords.append(bounds.origin.y)
+            all_y_coords.append(bounds.origin.y + bounds.size.height)
+
+        # 計算選取字符的實際中心點
+        actual_min_x = min(all_x_coords)
+        actual_max_x = max(all_x_coords)
+        actual_min_y = min(all_y_coords)
+        actual_max_y = max(all_y_coords)
+
+        actual_centerX = (actual_min_x + actual_max_x) / 2
+        actual_centerY = (actual_min_y + actual_max_y) / 2
+
+        # 使用實際選取範圍的寬度
+        width = actual_max_x - actual_min_x
+
+        # 計算跨越的行數並調整高度
+        import math
+        estimated_lines = math.ceil(selection_width / edit_view_width)
+        single_line_height = actual_max_y - actual_min_y
+        height = single_line_height * estimated_lines
+
+        print(f"   選取寬度: {selection_width:.1f}")
+        print(f"   編輯器寬度: {edit_view_width:.1f}")
+        print(f"   估計行數: {estimated_lines}")
+        print(f"   單行高度: {single_line_height:.1f}")
+        print(f"   調整後高度: {height:.1f}")
+
+        # 使用實際範圍的最小值作為起點(完整包覆選取文字)
+        min_x = actual_min_x
+        min_y = actual_min_y
+
+        print(f"   實際X範圍: {actual_min_x:.1f} ~ {actual_max_x:.1f}")
+        print(f"   實際Y範圍: {actual_min_y:.1f} ~ {actual_max_y:.1f}")
+        print(f"   實際寬度: {width:.1f}")
+        print(f"   幾何中心: ({actual_centerX:.1f}, {actual_centerY:.1f})")
+        print(f"   最終矩形: origin=({min_x:.1f}, {min_y:.1f}), size=({width:.1f}, {height:.1f})")
+        print(f"   視覺中心: ({min_x + width/2:.1f}, {min_y + height/2:.1f})")
+
+        return NSMakeRect(min_x, min_y, width, height)
 
     @objc.python_method
     def _calculateSelectionBounds(self, layer):
@@ -129,177 +249,89 @@ class ZoomToSelection(GeneralPlugin):
     def _calculateTextSelectionBounds(self, tab):
         """計算文字選取範圍的邊界（Text Tool 模式）
 
-        改進版：
-        1. 使用 Y 座標變化檢測跨行
-        2. 跨行時使用 Glyphs.editViewWidth 作為寬度
-        3. 單行時嘗試簡化計算（驗證座標性質）
+        簡化版本：基於選取寬度判斷是否跨行
         """
-        print("\n=== 開始計算文字選取邊界（改進版）===")
+        print("\n=== 開始計算文字選取邊界 ===")
 
         # 取得選取的圖層
         try:
             selected_layers = tab.selectedLayers
-            print("📍 使用 tab.selectedLayers 屬性")
-            print(f"   返回 {len(selected_layers) if selected_layers else 0} 個圖層")
+            edit_view_width = Glyphs.editViewWidth
+
+            print(f"📍 選取圖層數量: {len(selected_layers) if selected_layers else 0}")
+            print(f"📍 編輯器寬度: {edit_view_width}")
 
             if not selected_layers or len(selected_layers) == 0:
-                print("❌ selectedLayers 返回空列表")
+                print("❌ 沒有選取任何圖層")
                 return None
 
         except Exception as e:
-            print(f"❌ selectedLayers 失敗: {e}")
+            print(f"❌ 取得圖層資訊失敗: {e}")
             import traceback
             print(traceback.format_exc())
             return None
 
-        # 收集有效的邊界框
-        print("\n📦 收集有效邊界:")
-        valid_bounds = []
-        for idx, layer in enumerate(selected_layers):
-            layer_name = getattr(layer.parent, 'name', 'N/A') if hasattr(layer, 'parent') else 'N/A'
-            bounds = layer.bounds
+        # 計算選取範圍的總寬度並檢測換行符號
+        print("\n📏 分析選取範圍:")
+        selection_width = 0
+        has_newline = False
+        valid_layer_count = 0
 
-            if bounds and self._isValidBounds(bounds):
-                valid_bounds.append({
-                    'layer': layer,
-                    'bounds': bounds,
-                    'index': idx,
-                    'name': layer_name
-                })
-                if idx < 3 or idx >= len(selected_layers) - 2:  # 顯示前3個和後2個
-                    print(f"   [{idx}] {layer_name}: bounds.origin=({bounds.origin.x:.1f}, {bounds.origin.y:.1f}), "
-                          f"size=({bounds.size.width:.1f}, {bounds.size.height:.1f}), layer.width={layer.width:.1f}")
-            elif idx < 3:
-                print(f"   [{idx}] {layer_name}: ⚠️ 無效或缺少 bounds")
+        for layer in selected_layers:
+            if callable(layer.bounds):
+                # 換行符號
+                has_newline = True
+                print("   檢測到換行符號")
+            else:
+                selection_width += layer.width
+                valid_layer_count += 1
 
-        if not valid_bounds:
-            print("❌ 沒有有效的圖層邊界")
+        print(f"   有效字符數量: {valid_layer_count}")
+        print(f"   選取總寬度: {selection_width:.1f}")
+        print(f"   包含換行符號: {has_newline}")
+
+        # 判斷是否跨行
+        is_multiline = (selection_width > edit_view_width) or has_newline
+
+        if is_multiline:
+            reason = "寬度超過 editViewWidth" if selection_width > edit_view_width else "包含換行符號"
+            print(f"   判定: ✓ 跨行選取 ({reason})")
+        else:
+            print("   判定: ✓ 單行選取")
+
+        # 計算邊界
+        if is_multiline:
+            # 跨行模式
+            print("\n📐 計算邊界 (跨行模式):")
+            result = self._calculateMultiLineBounds(selected_layers, edit_view_width, selection_width)
+
+            if result:
+                center_x = result.origin.x + result.size.width / 2
+                center_y = result.origin.y + result.size.height / 2
+                print(f"   使用寬度: {result.size.width:.1f}")
+                print(f"   起始 X: {result.origin.x:.1f}")
+                print(f"   中心點 X: {center_x:.1f} (應為 0)")
+                print(f"   Y 範圍: {result.origin.y:.1f} ~ {result.origin.y + result.size.height:.1f}")
+                print(f"   高度: {result.size.height:.1f}")
+                print(f"   中心點 Y: {center_y:.1f}")
+        else:
+            # 單行模式
+            print("\n📐 計算邊界 (單行模式):")
+            result = self._calculateSingleLineBounds(selected_layers)
+
+            if result:
+                center_x = result.origin.x + result.size.width / 2
+                print(f"   起始 X: {result.origin.x:.1f}")
+                print(f"   選取寬度: {result.size.width:.1f}")
+                print(f"   中心點 X: {center_x:.1f}")
+
+        if not result:
+            print("❌ 無法計算邊界")
             return None
 
-        if len(valid_bounds) < len(selected_layers):
-            print(f"   ⚠️ {len(selected_layers) - len(valid_bounds)} 個圖層沒有有效 bounds")
-
-        # 檢測是否跨行：Y 座標變化檢測
-        print("\n🔍 檢測是否跨行:")
-        y_coords = [item['bounds'].origin.y for item in valid_bounds]
-        min_y = min(y_coords)
-        max_y_origin = max(y_coords)
-        y_range = max_y_origin - min_y
-
-        # 閾值設定：根據字形高度判斷
-        # 取第一個有效邊界的高度作為參考
-        first_height = valid_bounds[0]['bounds'].size.height
-        y_threshold = max(50, first_height * 0.3)  # 至少 50，或字形高度的 30%
-
-        is_multiline = y_range > y_threshold
-
-        print(f"   Y 座標範圍: {min_y:.1f} ~ {max_y_origin:.1f} (差距={y_range:.1f})")
-        print(f"   參考字形高度: {first_height:.1f}, 閾值: {y_threshold:.1f}")
-        print(f"   判定: {'✓ 跨行選取' if is_multiline else '✓ 單行選取'}")
-
-        # 計算邊界框
-        if is_multiline:
-            # === 跨行模式：使用 editViewWidth ===
-            print("\n📐 跨行模式計算:")
-            edit_view_width = Glyphs.editViewWidth
-            print(f"   editViewWidth = {edit_view_width}")
-
-            width = edit_view_width
-            min_x = 0  # 假設從行首開始
-
-            # Y 範圍：涵蓋所有字形的完整高度
-            all_y_coords = []
-            for item in valid_bounds:
-                b = item['bounds']
-                all_y_coords.append(b.origin.y)
-                all_y_coords.append(b.origin.y + b.size.height)
-
-            min_y = min(all_y_coords)
-            max_y = max(all_y_coords)
-            height = max_y - min_y
-
-            print(f"   使用寬度: {width} (editViewWidth)")
-            print(f"   Y 範圍: {min_y:.1f} ~ {max_y:.1f} (高度={height:.1f})")
-
-        else:
-            # === 單行模式：嘗試簡化計算 ===
-            print("\n📏 單行模式計算:")
-
-            # 方法 1：嘗試直接使用第一個和最後一個的座標
-            first_item = valid_bounds[0]
-            last_item = valid_bounds[-1]
-
-            first_bounds = first_item['bounds']
-            last_bounds = last_item['bounds']
-
-            print(f"   第一個字形: {first_item['name']}")
-            print(f"     bounds.origin.x = {first_bounds.origin.x:.1f}")
-            print(f"     layer.width = {first_item['layer'].width:.1f}")
-            print(f"   最後一個字形: {last_item['name']}")
-            print(f"     bounds.origin.x = {last_bounds.origin.x:.1f}")
-            print(f"     bounds.size.width = {last_bounds.size.width:.1f}")
-            print(f"     layer.width = {last_item['layer'].width:.1f}")
-
-            # 嘗試簡化計算：假設 bounds.origin.x 反映實際位置關係
-            simple_min_x = first_bounds.origin.x
-            simple_max_x = last_bounds.origin.x + last_bounds.size.width
-            simple_width = simple_max_x - simple_min_x
-
-            print(f"   簡化計算: min_x={simple_min_x:.1f}, max_x={simple_max_x:.1f}, width={simple_width:.1f}")
-
-            # 方法 2：累積寬度計算（作為對照）
-            accumulated_x = 0
-            accum_min_x = None
-            accum_max_x = None
-
-            for item in valid_bounds:
-                layer = item['layer']
-                bounds = item['bounds']
-
-                layer_min_x = accumulated_x + bounds.origin.x
-                layer_max_x = accumulated_x + bounds.origin.x + bounds.size.width
-
-                if accum_min_x is None:
-                    accum_min_x = layer_min_x
-                    accum_max_x = layer_max_x
-                else:
-                    accum_min_x = min(accum_min_x, layer_min_x)
-                    accum_max_x = max(accum_max_x, layer_max_x)
-
-                accumulated_x += layer.width
-
-            accum_width = accum_max_x - accum_min_x
-            print(f"   累積計算: min_x={accum_min_x:.1f}, max_x={accum_max_x:.1f}, width={accum_width:.1f}")
-
-            # 比較兩種方法的差異
-            width_diff = abs(simple_width - accum_width)
-            print(f"   寬度差異: {width_diff:.1f}")
-
-            # 選擇使用的方法
-            if width_diff < 1.0:  # 差異小於 1 單位，視為相同
-                print("   → 使用簡化計算（差異可忽略）")
-                min_x = simple_min_x
-                width = simple_width
-            else:
-                print("   → 使用累積計算（差異顯著，bounds 可能是相對座標）")
-                min_x = accum_min_x
-                width = accum_width
-
-            # Y 範圍計算
-            all_y_coords = []
-            for item in valid_bounds:
-                b = item['bounds']
-                all_y_coords.append(b.origin.y)
-                all_y_coords.append(b.origin.y + b.size.height)
-
-            min_y = min(all_y_coords)
-            max_y = max(all_y_coords)
-            height = max_y - min_y
-
-        result = NSMakeRect(min_x, min_y, width, height)
         print("\n✅ 最終邊界:")
-        print(f"   origin=({min_x:.1f}, {min_y:.1f})")
-        print(f"   size=({width:.1f}, {height:.1f})")
+        print(f"   origin=({result.origin.x:.1f}, {result.origin.y:.1f})")
+        print(f"   size=({result.size.width:.1f}, {result.size.height:.1f})")
         print("=== 計算完成 ===\n")
 
         return result
