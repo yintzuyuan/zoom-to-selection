@@ -127,12 +127,18 @@ class ZoomToSelection(GeneralPlugin):
 
     @objc.python_method
     def _calculateTextSelectionBounds(self, tab):
-        """計算文字選取範圍的邊界（Text Tool 模式）"""
-        print("\n=== 開始計算文字選取邊界 ===")
+        """計算文字選取範圍的邊界（Text Tool 模式）
 
-        # 使用 selectedLayers 屬性（不是方法）自動處理字符→字形映射
+        改進版：
+        1. 使用 Y 座標變化檢測跨行
+        2. 跨行時使用 Glyphs.editViewWidth 作為寬度
+        3. 單行時嘗試簡化計算（驗證座標性質）
+        """
+        print("\n=== 開始計算文字選取邊界（改進版）===")
+
+        # 取得選取的圖層
         try:
-            selected_layers = tab.selectedLayers  # 注意：這是屬性，不是方法
+            selected_layers = tab.selectedLayers
             print("📍 使用 tab.selectedLayers 屬性")
             print(f"   返回 {len(selected_layers) if selected_layers else 0} 個圖層")
 
@@ -140,74 +146,160 @@ class ZoomToSelection(GeneralPlugin):
                 print("❌ selectedLayers 返回空列表")
                 return None
 
-            # 顯示選取的圖層資訊
-            for idx, layer in enumerate(selected_layers[:5]):  # 只顯示前5個
-                layer_name = getattr(layer.parent, 'name', 'N/A') if hasattr(layer, 'parent') else 'N/A'
-                bounds = layer.bounds
-                print(f"   [{idx}] 字形={layer_name}, bounds={bounds}")
-
         except Exception as e:
             print(f"❌ selectedLayers 失敗: {e}")
             import traceback
             print(traceback.format_exc())
             return None
 
-        # 使用累積寬度計算實際排版邊界
-        print(f"\n📏 開始合併邊界（使用累積寬度）:")
-        x_offset = 0  # 累積的 X 偏移（文字排版位置）
-        min_x = None
-        max_x = None
-        min_y = None
-        max_y = None
-
-        for i, layer in enumerate(selected_layers):
+        # 收集有效的邊界框
+        print("\n📦 收集有效邊界:")
+        valid_bounds = []
+        for idx, layer in enumerate(selected_layers):
+            layer_name = getattr(layer.parent, 'name', 'N/A') if hasattr(layer, 'parent') else 'N/A'
             bounds = layer.bounds
-            layer_width = layer.width
 
-            print(f"   圖層 {i}: width={layer_width:.1f}, x_offset={x_offset:.1f}")
+            if bounds and self._isValidBounds(bounds):
+                valid_bounds.append({
+                    'layer': layer,
+                    'bounds': bounds,
+                    'index': idx,
+                    'name': layer_name
+                })
+                if idx < 3 or idx >= len(selected_layers) - 2:  # 顯示前3個和後2個
+                    print(f"   [{idx}] {layer_name}: bounds.origin=({bounds.origin.x:.1f}, {bounds.origin.y:.1f}), "
+                          f"size=({bounds.size.width:.1f}, {bounds.size.height:.1f}), layer.width={layer.width:.1f}")
+            elif idx < 3:
+                print(f"   [{idx}] {layer_name}: ⚠️ 無效或缺少 bounds")
 
-            if not bounds or not self._isValidBounds(bounds):
-                print(f"      ⚠️  沒有有效 bounds，跳過但計入 width")
-                x_offset += layer_width
-                continue
-
-            # 計算當前圖層在排版中的實際 X 位置
-            # bounds.origin.x 是相對於圖層原點的偏移
-            layer_min_x = x_offset + bounds.origin.x
-            layer_max_x = x_offset + bounds.origin.x + bounds.size.width
-            layer_min_y = bounds.origin.y
-            layer_max_y = bounds.origin.y + bounds.size.height
-
-            print(f"      實際 x=[{layer_min_x:.1f}, {layer_max_x:.1f}], y=[{layer_min_y:.1f}, {layer_max_y:.1f}]")
-
-            # 更新總邊界
-            if min_x is None:
-                min_x = layer_min_x
-                max_x = layer_max_x
-                min_y = layer_min_y
-                max_y = layer_max_y
-                print(f"      → 初始化邊界")
-            else:
-                old_min_x, old_max_x = min_x, max_x
-                min_x = min(min_x, layer_min_x)
-                max_x = max(max_x, layer_max_x)
-                min_y = min(min_y, layer_min_y)
-                max_y = max(max_y, layer_max_y)
-                if min_x != old_min_x or max_x != old_max_x:
-                    print(f"      → 更新邊界: x=[{min_x:.1f}, {max_x:.1f}]")
-
-            # 更新累積偏移
-            x_offset += layer_width
-
-        if min_x is None:
+        if not valid_bounds:
             print("❌ 沒有有效的圖層邊界")
             return None
 
-        result = NSMakeRect(min_x, min_y, max_x - min_x, max_y - min_y)
-        print(f"\n✅ 最終合併邊界:")
+        if len(valid_bounds) < len(selected_layers):
+            print(f"   ⚠️ {len(selected_layers) - len(valid_bounds)} 個圖層沒有有效 bounds")
+
+        # 檢測是否跨行：Y 座標變化檢測
+        print("\n🔍 檢測是否跨行:")
+        y_coords = [item['bounds'].origin.y for item in valid_bounds]
+        min_y = min(y_coords)
+        max_y_origin = max(y_coords)
+        y_range = max_y_origin - min_y
+
+        # 閾值設定：根據字形高度判斷
+        # 取第一個有效邊界的高度作為參考
+        first_height = valid_bounds[0]['bounds'].size.height
+        y_threshold = max(50, first_height * 0.3)  # 至少 50，或字形高度的 30%
+
+        is_multiline = y_range > y_threshold
+
+        print(f"   Y 座標範圍: {min_y:.1f} ~ {max_y_origin:.1f} (差距={y_range:.1f})")
+        print(f"   參考字形高度: {first_height:.1f}, 閾值: {y_threshold:.1f}")
+        print(f"   判定: {'✓ 跨行選取' if is_multiline else '✓ 單行選取'}")
+
+        # 計算邊界框
+        if is_multiline:
+            # === 跨行模式：使用 editViewWidth ===
+            print("\n📐 跨行模式計算:")
+            edit_view_width = Glyphs.editViewWidth
+            print(f"   editViewWidth = {edit_view_width}")
+
+            width = edit_view_width
+            min_x = 0  # 假設從行首開始
+
+            # Y 範圍：涵蓋所有字形的完整高度
+            all_y_coords = []
+            for item in valid_bounds:
+                b = item['bounds']
+                all_y_coords.append(b.origin.y)
+                all_y_coords.append(b.origin.y + b.size.height)
+
+            min_y = min(all_y_coords)
+            max_y = max(all_y_coords)
+            height = max_y - min_y
+
+            print(f"   使用寬度: {width} (editViewWidth)")
+            print(f"   Y 範圍: {min_y:.1f} ~ {max_y:.1f} (高度={height:.1f})")
+
+        else:
+            # === 單行模式：嘗試簡化計算 ===
+            print("\n📏 單行模式計算:")
+
+            # 方法 1：嘗試直接使用第一個和最後一個的座標
+            first_item = valid_bounds[0]
+            last_item = valid_bounds[-1]
+
+            first_bounds = first_item['bounds']
+            last_bounds = last_item['bounds']
+
+            print(f"   第一個字形: {first_item['name']}")
+            print(f"     bounds.origin.x = {first_bounds.origin.x:.1f}")
+            print(f"     layer.width = {first_item['layer'].width:.1f}")
+            print(f"   最後一個字形: {last_item['name']}")
+            print(f"     bounds.origin.x = {last_bounds.origin.x:.1f}")
+            print(f"     bounds.size.width = {last_bounds.size.width:.1f}")
+            print(f"     layer.width = {last_item['layer'].width:.1f}")
+
+            # 嘗試簡化計算：假設 bounds.origin.x 反映實際位置關係
+            simple_min_x = first_bounds.origin.x
+            simple_max_x = last_bounds.origin.x + last_bounds.size.width
+            simple_width = simple_max_x - simple_min_x
+
+            print(f"   簡化計算: min_x={simple_min_x:.1f}, max_x={simple_max_x:.1f}, width={simple_width:.1f}")
+
+            # 方法 2：累積寬度計算（作為對照）
+            accumulated_x = 0
+            accum_min_x = None
+            accum_max_x = None
+
+            for item in valid_bounds:
+                layer = item['layer']
+                bounds = item['bounds']
+
+                layer_min_x = accumulated_x + bounds.origin.x
+                layer_max_x = accumulated_x + bounds.origin.x + bounds.size.width
+
+                if accum_min_x is None:
+                    accum_min_x = layer_min_x
+                    accum_max_x = layer_max_x
+                else:
+                    accum_min_x = min(accum_min_x, layer_min_x)
+                    accum_max_x = max(accum_max_x, layer_max_x)
+
+                accumulated_x += layer.width
+
+            accum_width = accum_max_x - accum_min_x
+            print(f"   累積計算: min_x={accum_min_x:.1f}, max_x={accum_max_x:.1f}, width={accum_width:.1f}")
+
+            # 比較兩種方法的差異
+            width_diff = abs(simple_width - accum_width)
+            print(f"   寬度差異: {width_diff:.1f}")
+
+            # 選擇使用的方法
+            if width_diff < 1.0:  # 差異小於 1 單位，視為相同
+                print("   → 使用簡化計算（差異可忽略）")
+                min_x = simple_min_x
+                width = simple_width
+            else:
+                print("   → 使用累積計算（差異顯著，bounds 可能是相對座標）")
+                min_x = accum_min_x
+                width = accum_width
+
+            # Y 範圍計算
+            all_y_coords = []
+            for item in valid_bounds:
+                b = item['bounds']
+                all_y_coords.append(b.origin.y)
+                all_y_coords.append(b.origin.y + b.size.height)
+
+            min_y = min(all_y_coords)
+            max_y = max(all_y_coords)
+            height = max_y - min_y
+
+        result = NSMakeRect(min_x, min_y, width, height)
+        print("\n✅ 最終邊界:")
         print(f"   origin=({min_x:.1f}, {min_y:.1f})")
-        print(f"   size=({max_x - min_x:.1f}, {max_y - min_y:.1f})")
-        print(f"   總寬度（累積）={x_offset:.1f}")
+        print(f"   size=({width:.1f}, {height:.1f})")
         print("=== 計算完成 ===\n")
 
         return result
