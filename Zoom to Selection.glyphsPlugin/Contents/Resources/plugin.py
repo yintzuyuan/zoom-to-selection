@@ -95,37 +95,181 @@ class ZoomToSelection(GeneralPlugin):
         return True
 
     @objc.python_method
-    def _calculateSingleLineBounds(self, selected_layers):
-        """計算單行選取的邊界
+    def _collectSelectionInfo(self, selected_layers, tab):
+        """統一收集選取範圍的基本資訊
 
         Args:
             selected_layers: 選取的 layers
+            tab: 當前編輯分頁
 
         Returns:
-            NSRect: 選取範圍的邊界
+            dict: 包含以下鍵值的字典
+                - valid_layers: 有效的 layer 列表
+                - valid_bounds: 有效的 bounds 列表
+                - selection_width: 選取總寬度
+                - has_newline: 是否包含換行符號
+                - line_breaks: 換行符號的位置索引列表
+                - first_selected_index: 第一個選取字符的索引
         """
-        # 收集有效的 bounds 並計算選取寬度
-        valid_bounds = []
-        selection_width = 0
+        info = {
+            'valid_layers': [],
+            'valid_bounds': [],
+            'selection_width': 0,
+            'has_newline': False,
+            'line_breaks': [],
+            'first_selected_index': tab.layersCursor if hasattr(tab, 'layersCursor') else 0,
+        }
 
-        for layer in selected_layers:
+        for idx, layer in enumerate(selected_layers):
             bounds = layer.bounds
 
-            # 跳過換行符號
+            # 檢查是否為換行符號
             if callable(bounds):
+                info['has_newline'] = True
+                info['line_breaks'].append(idx)
                 continue
 
+            # 檢查是否為有效的 bounds
             if bounds and self._isValidBounds(bounds):
-                valid_bounds.append(bounds)
-                selection_width += layer.width
+                info['valid_layers'].append(layer)
+                info['valid_bounds'].append(bounds)
+                info['selection_width'] += layer.width
 
+        return info
+
+    @objc.python_method
+    def _getLineHeight(self, font, valid_bounds):
+        """取得行高
+
+        Args:
+            font: 當前字體
+            valid_bounds: 有效的 bounds 列表
+
+        Returns:
+            float: 行高值
+        """
+        # 優先使用 EditView Line Height 自訂參數
+        line_height_param = font.customParameters['EditView Line Height']
+        if line_height_param is not None:
+            return float(line_height_param)
+
+        # 如果沒有設定，則使用選取字符的實際高度範圍
+        if valid_bounds:
+            all_y_coords = []
+            for bounds in valid_bounds:
+                all_y_coords.append(bounds.origin.y)
+                all_y_coords.append(bounds.origin.y + bounds.size.height)
+
+            if all_y_coords:
+                return max(all_y_coords) - min(all_y_coords)
+
+        # 預設值：使用 UPM * 1.2
+        return font.upm * 1.2
+
+    @objc.python_method
+    def _analyzeLineStructure(self, tab, info, edit_view_width):
+        """分析選取範圍的行結構（使用行號比較法）
+
+        追蹤從索引 0 到最後一個選取字符，記錄：
+        1. 第一個選取字符所在的行號
+        2. 最後一個選取字符所在的行號
+        3. 第一個選取字符前的累積寬度（僅當前行）
+
+        選取範圍行數 = 最後一個字符行號 - 第一個字符行號 + 1
+
+        Args:
+            tab: 當前編輯分頁
+            info: 從 _collectSelectionInfo 收集的資訊
+            edit_view_width: 編輯器寬度
+
+        Returns:
+            dict: {
+                'total_lines': int,              # 選取範圍總行數
+                'accumulated_width': float,      # 第一個選取字符前的累積寬度（當前行）
+                'is_multiline': bool             # 是否跨行
+            }
+        """
+        first_selected_index = info['first_selected_index']
+        last_selected_index = first_selected_index + len(info['valid_layers']) - 1
+
+        # 追蹤整個範圍（從索引 0 到最後一個選取字符）
+        current_line = 0
+        current_line_width = 0.0
+        first_selected_line = None
+        last_selected_line = None
+        accumulated_width_at_first = 0.0
+
+        if hasattr(tab, 'layers') and tab.layers:
+            for i in range(last_selected_index + 1):
+                layer = tab.layers[i]
+
+                # 遇到換行符號：進入新行
+                if callable(layer.bounds):
+                    current_line += 1
+                    current_line_width = 0.0
+                    continue
+
+                # 檢查是否因寬度超過而自動換行
+                if current_line_width + layer.width > edit_view_width:
+                    current_line += 1
+                    current_line_width = layer.width
+                else:
+                    current_line_width += layer.width
+
+                # 記錄第一個選取字符的位置
+                if i == first_selected_index:
+                    first_selected_line = current_line
+                    accumulated_width_at_first = current_line_width - layer.width
+
+                # 記錄最後一個選取字符的位置
+                if i == last_selected_index:
+                    last_selected_line = current_line
+
+        # 計算選取範圍跨越的行數
+        if first_selected_line is not None and last_selected_line is not None:
+            selected_lines = last_selected_line - first_selected_line + 1
+        else:
+            selected_lines = 1
+
+        # 判斷是否跨行
+        is_multiline = (selected_lines > 1)
+
+        print("\n📊 行結構分析 (行號比較法):")
+        print(f"   第一個選取字符所在行: {first_selected_line}")
+        print(f"   最後一個選取字符所在行: {last_selected_line}")
+        print(f"   第一個字符前的累積寬度: {accumulated_width_at_first:.1f}")
+        print(f"   選取範圍總行數: {selected_lines}")
+        print(f"   是否跨行: {is_multiline}")
+
+        return {
+            'total_lines': selected_lines,
+            'accumulated_width': accumulated_width_at_first,
+            'is_multiline': is_multiline
+        }
+
+    @objc.python_method
+    def _calculateUnifiedBounds(self, info, edit_view_width, font, tab):
+        """統一的邊界計算方法（合併單行和多行邏輯）
+
+        Args:
+            info: 從 _collectSelectionInfo 收集的資訊
+            edit_view_width: 編輯器寬度
+            font: 當前字體
+            tab: 當前編輯分頁
+
+        Returns:
+            tuple: (NSRect 邊界, bool 是否跨行, float 累積寬度)
+        """
+        valid_bounds = info['valid_bounds']
         if not valid_bounds:
-            return None
+            return None, False, 0
 
-        # 計算 X 範圍：使用第一個字符的 bounds.origin.x（相對座標）
-        min_x = valid_bounds[0].origin.x
+        # 分析行結構（同時計算跨行判斷、累積寬度、總行數）
+        line_info = self._analyzeLineStructure(tab, info, edit_view_width)
+        is_multiline = line_info['is_multiline']
+        accumulated_width = line_info['accumulated_width']
 
-        # 計算 Y 範圍
+        # 計算 Y 範圍（單行和多行都需要）
         all_y_coords = []
         for bounds in valid_bounds:
             all_y_coords.append(bounds.origin.y)
@@ -133,88 +277,67 @@ class ZoomToSelection(GeneralPlugin):
 
         min_y = min(all_y_coords)
         max_y = max(all_y_coords)
-        height = max_y - min_y
 
-        return NSMakeRect(min_x, min_y, selection_width, height)
+        if is_multiline:
+            # === 跨行模式 ===
+            # 計算行高
+            line_height = self._getLineHeight(font, valid_bounds)
 
-    @objc.python_method
-    def _calculateMultiLineBounds(self, selected_layers, edit_view_width, selection_width):
-        """計算跨行選取的邊界
+            # 使用行結構分析的結果
+            actual_lines = line_info['total_lines']
 
-        Args:
-            selected_layers: 選取的 layers
-            edit_view_width: 編輯器寬度
-            selection_width: 選取範圍的總寬度
+            # 計算總高度
+            height = line_height * actual_lines
 
-        Returns:
-            NSRect: 選取範圍的邊界
-        """
-        # 收集有效的 bounds（跳過換行符號）
-        valid_bounds = []
-        for layer in selected_layers:
-            bounds = layer.bounds
+            # X 軸：使用完整行寬
+            width = edit_view_width
+            min_x = 0  # 從行首開始
 
-            # 跳過換行符號
-            if callable(bounds):
-                continue
+            # 計算中心點
+            # X: 行中心
+            center_x = edit_view_width / 2
 
-            if bounds and self._isValidBounds(bounds):
-                valid_bounds.append(bounds)
+            # Y: 第一行中心到最後一行中心的中點
+            first_bounds = valid_bounds[0]
+            first_line_center_y = first_bounds.origin.y + first_bounds.size.height / 2
+            last_line_center_y = first_line_center_y - (actual_lines - 1) * line_height
+            center_y = (first_line_center_y + last_line_center_y) / 2
 
-        if not valid_bounds:
-            return None
+            # 使用中心點計算矩形起點
+            min_y = center_y - height / 2
 
-        # 獲取第一個字符的 bounds
-        first_bounds = valid_bounds[0]
+            print("\n📐 跨行模式邊界計算:")
+            print(f"   選取寬度: {info['selection_width']:.1f}")
+            print(f"   編輯器寬度: {edit_view_width:.1f}")
+            print(f"   包含換行: {info['has_newline']}")
+            print(f"   行數: {actual_lines}")
+            print(f"   行高: {line_height:.1f}")
+            print(f"   總高度: {height:.1f}")
+            print(f"   中心點: ({center_x:.1f}, {center_y:.1f})")
+            print(f"   累積寬度: {accumulated_width:.1f}")
 
-        # 計算第一個字符的中心點（作為起始參考點）
-        first_center_y = first_bounds.origin.y + first_bounds.size.height / 2
+        else:
+            # === 單行模式 ===
+            # 計算選取範圍相對於行首的起始位置
+            min_x = valid_bounds[0].origin.x
+            width = info['selection_width']
+            height = max_y - min_y
 
-        # 計算選取字符的實際 Y 範圍（用於計算單行高度）
-        all_y_coords = []
-        for bounds in valid_bounds:
-            all_y_coords.append(bounds.origin.y)
-            all_y_coords.append(bounds.origin.y + bounds.size.height)
+            # 中心點
+            center_x = min_x + width / 2
+            center_y = min_y + height / 2
 
-        actual_min_y = min(all_y_coords)
-        actual_max_y = max(all_y_coords)
-        single_line_height = actual_max_y - actual_min_y
+            print("\n📐 單行模式邊界計算:")
+            print(f"   起始 X: {min_x:.1f}")
+            print(f"   選取寬度: {width:.1f}")
+            print(f"   高度: {height:.1f}")
+            print(f"   中心點: ({center_x:.1f}, {center_y:.1f})")
 
-        # 計算跨越的行數
-        import math
-        estimated_lines = math.ceil(selection_width / edit_view_width)
+        bounds = NSMakeRect(min_x, min_y, width, height)
 
-        # 計算總高度
-        height = single_line_height * estimated_lines
+        print(f"   最終邊界: origin=({min_x:.1f}, {min_y:.1f}), size=({width:.1f}, {height:.1f})\n")
 
-        # 跨行時的中心點計算：
-        # X: 使用行首到行尾的中點（editViewWidth 的一半）
-        center_x = edit_view_width / 2
-
-        # Y: 從第一個字符中心點開始，往下延伸 (estimated_lines - 1) 行
-        #    然後取整體的中點
-        # 注意：Glyphs 座標系統 Y 軸向上為正，往下是減
-        center_y = first_center_y - (estimated_lines - 1) * single_line_height / 2
-
-        # 跨行時的寬度使用整個編輯器行寬
-        width = edit_view_width
-
-        print(f"   選取寬度: {selection_width:.1f}")
-        print(f"   編輯器寬度: {edit_view_width:.1f}")
-        print(f"   估計行數: {estimated_lines}")
-        print(f"   單行高度: {single_line_height:.1f}")
-        print(f"   總高度: {height:.1f}")
-        print(f"   第一個字符中心Y: {first_center_y:.1f}")
-        print(f"   計算偏移: {(estimated_lines - 1) * single_line_height / 2:.1f}")
-        print(f"   計算的中心點: ({center_x:.1f}, {center_y:.1f})")
-
-        # 使用中心點計算矩形的起點
-        min_x = center_x - width / 2
-        min_y = center_y - height / 2
-
-        print(f"   最終矩形: origin=({min_x:.1f}, {min_y:.1f}), size=({width:.1f}, {height:.1f})")
-
-        return NSMakeRect(min_x, min_y, width, height)
+        return bounds, is_multiline, accumulated_width
 
     @objc.python_method
     def _calculateSelectionBounds(self, layer):
@@ -255,12 +378,13 @@ class ZoomToSelection(GeneralPlugin):
         Returns:
             tuple: (NSRect 邊界, bool 是否跨行, float 累積寬度)
         """
-        print("\n=== 開始計算文字選取邊界 ===")
+        print("\n=== 開始計算文字選取邊界 (統一方法) ===")
 
         # 取得選取的圖層
         try:
             selected_layers = tab.selectedLayers
             edit_view_width = Glyphs.editViewWidth
+            font = Glyphs.font
 
             print(f"📍 選取圖層數量: {len(selected_layers) if selected_layers else 0}")
             print(f"📍 編輯器寬度: {edit_view_width}")
@@ -275,96 +399,39 @@ class ZoomToSelection(GeneralPlugin):
             print(traceback.format_exc())
             return None
 
-        # 計算選取範圍的總寬度並檢測換行符號
-        print("\n📏 分析選取範圍:")
-        selection_width = 0
-        has_newline = False
-        valid_layer_count = 0
+        # 統一收集選取資訊
+        print("\n📏 收集選取資訊:")
+        info = self._collectSelectionInfo(selected_layers, tab)
 
-        for layer in selected_layers:
-            if callable(layer.bounds):
-                # 換行符號
-                has_newline = True
-                print("   檢測到換行符號")
-            else:
-                selection_width += layer.width
-                valid_layer_count += 1
+        print(f"   有效字符數量: {len(info['valid_layers'])}")
+        print(f"   選取總寬度: {info['selection_width']:.1f}")
+        print(f"   包含換行符號: {info['has_newline']}")
+        if info['has_newline']:
+            print(f"   換行符號數量: {len(info['line_breaks'])}")
+        print(f"   第一個選取字符索引: {info['first_selected_index']}")
 
-        print(f"   有效字符數量: {valid_layer_count}")
-        print(f"   選取總寬度: {selection_width:.1f}")
-        print(f"   包含換行符號: {has_newline}")
+        # 使用統一方法計算邊界
+        result = self._calculateUnifiedBounds(info, edit_view_width, font, tab)
 
-        # 判斷是否跨行
-        is_multiline = (selection_width > edit_view_width) or has_newline
+        if not result or result[0] is None:
+            print("❌ 無法計算邊界")
+            return None
 
+        bounds, is_multiline, accumulated_width = result
+
+        # 顯示最終結果
+        center_x = bounds.origin.x + bounds.size.width / 2
+        center_y = bounds.origin.y + bounds.size.height / 2
+
+        print("\n✅ 最終結果:")
+        print(f"   模式: {'跨行' if is_multiline else '單行'}")
+        print(f"   邊界: origin=({bounds.origin.x:.1f}, {bounds.origin.y:.1f}), size=({bounds.size.width:.1f}, {bounds.size.height:.1f})")
+        print(f"   中心點: ({center_x:.1f}, {center_y:.1f})")
         if is_multiline:
-            reason = "寬度超過 editViewWidth" if selection_width > edit_view_width else "包含換行符號"
-            print(f"   判定: ✓ 跨行選取 ({reason})")
-        else:
-            print("   判定: ✓ 單行選取")
+            print(f"   累積寬度: {accumulated_width:.1f}")
+        print("=== 計算完成 ===\n")
 
-        # 計算累積寬度（跨行模式需要）
-        accumulated_width = 0
-        if is_multiline and tab.layers:
-            first_selected_index = tab.layersCursor  # 第一個選取字符的索引
-            print(f"\n📐 計算累積寬度:")
-            print(f"   第一個選取字符索引: {first_selected_index}")
-            
-            # 計算從索引 0 到第一個選取字符之間的累積寬度
-            for i in range(first_selected_index):
-                layer = tab.layers[i]
-                if not callable(layer.bounds):  # 跳過換行符號
-                    accumulated_width += layer.width
-            
-            print(f"   累積寬度 (索引 0 到 {first_selected_index}): {accumulated_width:.1f}")
-
-        # 計算邊界
-        if is_multiline:
-            # 跨行模式
-            print("\n📐 計算邊界 (跨行模式):")
-            result = self._calculateMultiLineBounds(selected_layers, edit_view_width, selection_width)
-
-            if result:
-                center_x = result.origin.x + result.size.width / 2
-                center_y = result.origin.y + result.size.height / 2
-                print(f"   使用寬度: {result.size.width:.1f}")
-                print(f"   起始 X: {result.origin.x:.1f}")
-                print(f"   中心點 X: {center_x:.1f}")
-                print(f"   Y 範圍: {result.origin.y:.1f} ~ {result.origin.y + result.size.height:.1f}")
-                print(f"   高度: {result.size.height:.1f}")
-                print(f"   中心點 Y: {center_y:.1f}")
-
-            if not result:
-                print("❌ 無法計算邊界")
-                return None
-
-            print("\n✅ 最終邊界:")
-            print(f"   origin=({result.origin.x:.1f}, {result.origin.y:.1f})")
-            print(f"   size=({result.size.width:.1f}, {result.size.height:.1f})")
-            print("=== 計算完成 ===\n")
-
-            return result, True, accumulated_width
-        else:
-            # 單行模式
-            print("\n📐 計算邊界 (單行模式):")
-            result = self._calculateSingleLineBounds(selected_layers)
-
-            if result:
-                center_x = result.origin.x + result.size.width / 2
-                print(f"   起始 X: {result.origin.x:.1f}")
-                print(f"   選取寬度: {result.size.width:.1f}")
-                print(f"   中心點 X: {center_x:.1f}")
-
-            if not result:
-                print("❌ 無法計算邊界")
-                return None
-
-            print("\n✅ 最終邊界:")
-            print(f"   origin=({result.origin.x:.1f}, {result.origin.y:.1f})")
-            print(f"   size=({result.size.width:.1f}, {result.size.height:.1f})")
-            print("=== 計算完成 ===\n")
-
-            return result, False, 0
+        return bounds, is_multiline, accumulated_width
 
     @objc.python_method
     def _calculateDynamicPadding(self, selWidth, selHeight):
@@ -479,7 +546,10 @@ class ZoomToSelection(GeneralPlugin):
         return True
 
     def setViewPortDelayed_(self, _):
-        """第二階段：延遲設定 viewPort（在 selectedLayerOrigin 更新後）"""
+        """第二階段：延遲設定 viewPort（在 selectedLayerOrigin 更新後）
+
+        使用統一的座標系統（相對於行首/索引 0）
+        """
         try:
             tab = Glyphs.font.currentTab
             if not tab:
@@ -491,38 +561,37 @@ class ZoomToSelection(GeneralPlugin):
             # 統一使用 selectedLayerOrigin（文字模式和節點模式都適用）
             origin = tab.selectedLayerOrigin
 
-            print("\n📍 設定 viewport 定位")
+            print("\n📍 設定 viewport 定位 (統一座標系統)")
             print(f"   selectedLayerOrigin=({origin.x:.1f}, {origin.y:.1f})")
             print(f"   選取中心點 (font units)=({self._zoomCenterX:.1f}, {self._zoomCenterY:.1f})")
             print(f"   scale={self._zoomScale:.3f}")
 
-            # 根據模式選擇不同的 X 軸計算方式
+            # 統一的 X 軸計算方式
             if self._isMultiline:
-                # 跨行模式：從行首（索引 0）開始計算
-                edit_view_width = Glyphs.editViewWidth
-                
+                # 跨行模式：中心點已經是「相對於行首」的座標
                 # 步驟 1：反推行首（索引 0）在 view coordinates 的位置
                 lineStartViewX = origin.x - (self._accumulatedWidth * self._zoomScale)
-                
-                # 步驟 2：行中心 = 行首 + 行寬一半
-                centerViewX = lineStartViewX + ((edit_view_width / 2) * self._zoomScale)
 
-                print("📍 跨行模式定位")
+                # 步驟 2：中心點 = 行首 + 中心偏移（_zoomCenterX 已經是 editViewWidth / 2）
+                centerViewX = lineStartViewX + (self._zoomCenterX * self._zoomScale)
+
+                print("📍 跨行模式:")
                 print(f"   累積寬度 (索引0到選取起點): {self._accumulatedWidth:.1f}")
-                print(f"   → 行首 view X (索引0): {lineStartViewX:.1f}")
-                print(f"   → 行中心 view X (索引0 + 行寬/2): {centerViewX:.1f}")
+                print(f"   行首 view X: {lineStartViewX:.1f}")
+                print(f"   中心偏移 (font units): {self._zoomCenterX:.1f}")
+                print(f"   最終中心 view X: {centerViewX:.1f}")
             else:
-                # 單行模式：跟隨第一個字符的位置
+                # 單行模式：中心點相對於第一個字符
                 centerViewX = origin.x + (self._zoomCenterX * self._zoomScale)
 
-                print("📍 單行模式定位")
+                print("📍 單行模式:")
                 print(f"   selectedLayerOrigin.x: {origin.x:.1f}")
-                print(f"   相對中心 (font units): {self._zoomCenterX:.1f}")
-                print(f"   view 座標中心 X: {centerViewX:.1f}")
+                print(f"   相對中心偏移: {self._zoomCenterX:.1f}")
+                print(f"   最終中心 view X: {centerViewX:.1f}")
 
             # Y 軸計算相同
             centerViewY = origin.y + (self._zoomCenterY * self._zoomScale)
-            print(f"   view 座標中心 Y: {centerViewY:.1f}")
+            print(f"   最終中心 view Y: {centerViewY:.1f}")
 
             # 設定 viewPort
             tab.viewPort = NSMakeRect(
