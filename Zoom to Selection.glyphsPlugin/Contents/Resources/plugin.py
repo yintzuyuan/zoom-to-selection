@@ -164,52 +164,55 @@ class ZoomToSelection(GeneralPlugin):
         if not valid_bounds:
             return None
 
-        # 計算選取字符的實際 X 和 Y 範圍
-        all_x_coords = []
-        all_y_coords = []
+        # 獲取第一個字符的 bounds
+        first_bounds = valid_bounds[0]
 
+        # 計算第一個字符的中心點（作為起始參考點）
+        first_center_y = first_bounds.origin.y + first_bounds.size.height / 2
+
+        # 計算選取字符的實際 Y 範圍（用於計算單行高度）
+        all_y_coords = []
         for bounds in valid_bounds:
-            # 收集 X 座標
-            all_x_coords.append(bounds.origin.x)
-            all_x_coords.append(bounds.origin.x + bounds.size.width)
-            # 收集 Y 座標
             all_y_coords.append(bounds.origin.y)
             all_y_coords.append(bounds.origin.y + bounds.size.height)
 
-        # 計算選取字符的實際中心點
-        actual_min_x = min(all_x_coords)
-        actual_max_x = max(all_x_coords)
         actual_min_y = min(all_y_coords)
         actual_max_y = max(all_y_coords)
+        single_line_height = actual_max_y - actual_min_y
 
-        actual_centerX = (actual_min_x + actual_max_x) / 2
-        actual_centerY = (actual_min_y + actual_max_y) / 2
-
-        # 使用實際選取範圍的寬度
-        width = actual_max_x - actual_min_x
-
-        # 計算跨越的行數並調整高度
+        # 計算跨越的行數
         import math
         estimated_lines = math.ceil(selection_width / edit_view_width)
-        single_line_height = actual_max_y - actual_min_y
+
+        # 計算總高度
         height = single_line_height * estimated_lines
+
+        # 跨行時的中心點計算：
+        # X: 使用行首到行尾的中點（editViewWidth 的一半）
+        center_x = edit_view_width / 2
+
+        # Y: 從第一個字符中心點開始，往下延伸 (estimated_lines - 1) 行
+        #    然後取整體的中點
+        # 注意：Glyphs 座標系統 Y 軸向上為正，往下是減
+        center_y = first_center_y - (estimated_lines - 1) * single_line_height / 2
+
+        # 跨行時的寬度使用整個編輯器行寬
+        width = edit_view_width
 
         print(f"   選取寬度: {selection_width:.1f}")
         print(f"   編輯器寬度: {edit_view_width:.1f}")
         print(f"   估計行數: {estimated_lines}")
         print(f"   單行高度: {single_line_height:.1f}")
-        print(f"   調整後高度: {height:.1f}")
+        print(f"   總高度: {height:.1f}")
+        print(f"   第一個字符中心Y: {first_center_y:.1f}")
+        print(f"   計算偏移: {(estimated_lines - 1) * single_line_height / 2:.1f}")
+        print(f"   計算的中心點: ({center_x:.1f}, {center_y:.1f})")
 
-        # 使用實際範圍的最小值作為起點(完整包覆選取文字)
-        min_x = actual_min_x
-        min_y = actual_min_y
+        # 使用中心點計算矩形的起點
+        min_x = center_x - width / 2
+        min_y = center_y - height / 2
 
-        print(f"   實際X範圍: {actual_min_x:.1f} ~ {actual_max_x:.1f}")
-        print(f"   實際Y範圍: {actual_min_y:.1f} ~ {actual_max_y:.1f}")
-        print(f"   實際寬度: {width:.1f}")
-        print(f"   幾何中心: ({actual_centerX:.1f}, {actual_centerY:.1f})")
         print(f"   最終矩形: origin=({min_x:.1f}, {min_y:.1f}), size=({width:.1f}, {height:.1f})")
-        print(f"   視覺中心: ({min_x + width/2:.1f}, {min_y + height/2:.1f})")
 
         return NSMakeRect(min_x, min_y, width, height)
 
@@ -249,7 +252,8 @@ class ZoomToSelection(GeneralPlugin):
     def _calculateTextSelectionBounds(self, tab):
         """計算文字選取範圍的邊界（Text Tool 模式）
 
-        簡化版本：基於選取寬度判斷是否跨行
+        Returns:
+            tuple: (NSRect 邊界, bool 是否跨行, float 累積寬度)
         """
         print("\n=== 開始計算文字選取邊界 ===")
 
@@ -299,6 +303,21 @@ class ZoomToSelection(GeneralPlugin):
         else:
             print("   判定: ✓ 單行選取")
 
+        # 計算累積寬度（跨行模式需要）
+        accumulated_width = 0
+        if is_multiline and tab.layers:
+            first_selected_index = tab.layersCursor  # 第一個選取字符的索引
+            print(f"\n📐 計算累積寬度:")
+            print(f"   第一個選取字符索引: {first_selected_index}")
+            
+            # 計算從索引 0 到第一個選取字符之間的累積寬度
+            for i in range(first_selected_index):
+                layer = tab.layers[i]
+                if not callable(layer.bounds):  # 跳過換行符號
+                    accumulated_width += layer.width
+            
+            print(f"   累積寬度 (索引 0 到 {first_selected_index}): {accumulated_width:.1f}")
+
         # 計算邊界
         if is_multiline:
             # 跨行模式
@@ -310,10 +329,21 @@ class ZoomToSelection(GeneralPlugin):
                 center_y = result.origin.y + result.size.height / 2
                 print(f"   使用寬度: {result.size.width:.1f}")
                 print(f"   起始 X: {result.origin.x:.1f}")
-                print(f"   中心點 X: {center_x:.1f} (應為 0)")
+                print(f"   中心點 X: {center_x:.1f}")
                 print(f"   Y 範圍: {result.origin.y:.1f} ~ {result.origin.y + result.size.height:.1f}")
                 print(f"   高度: {result.size.height:.1f}")
                 print(f"   中心點 Y: {center_y:.1f}")
+
+            if not result:
+                print("❌ 無法計算邊界")
+                return None
+
+            print("\n✅ 最終邊界:")
+            print(f"   origin=({result.origin.x:.1f}, {result.origin.y:.1f})")
+            print(f"   size=({result.size.width:.1f}, {result.size.height:.1f})")
+            print("=== 計算完成 ===\n")
+
+            return result, True, accumulated_width
         else:
             # 單行模式
             print("\n📐 計算邊界 (單行模式):")
@@ -325,16 +355,16 @@ class ZoomToSelection(GeneralPlugin):
                 print(f"   選取寬度: {result.size.width:.1f}")
                 print(f"   中心點 X: {center_x:.1f}")
 
-        if not result:
-            print("❌ 無法計算邊界")
-            return None
+            if not result:
+                print("❌ 無法計算邊界")
+                return None
 
-        print("\n✅ 最終邊界:")
-        print(f"   origin=({result.origin.x:.1f}, {result.origin.y:.1f})")
-        print(f"   size=({result.size.width:.1f}, {result.size.height:.1f})")
-        print("=== 計算完成 ===\n")
+            print("\n✅ 最終邊界:")
+            print(f"   origin=({result.origin.x:.1f}, {result.origin.y:.1f})")
+            print(f"   size=({result.size.width:.1f}, {result.size.height:.1f})")
+            print("=== 計算完成 ===\n")
 
-        return result
+            return result, False, 0
 
     @objc.python_method
     def _calculateDynamicPadding(self, selWidth, selHeight):
@@ -372,7 +402,13 @@ class ZoomToSelection(GeneralPlugin):
         # 檢查是否為文字選取模式（Text Tool）
         # 優先檢查，因為在文字模式時 activeLayer 可能為 None
         if hasattr(tab, 'textRange') and tab.textRange > 0:
-            bounds = self._calculateTextSelectionBounds(tab)
+            bounds_info = self._calculateTextSelectionBounds(tab)
+            if bounds_info:
+                bounds, is_multiline, accumulated_width = bounds_info
+                self._isMultiline = is_multiline
+                self._accumulatedWidth = accumulated_width
+            else:
+                return False
         else:
             # 節點選取模式（Edit Tool）
             layer = tab.activeLayer()
@@ -385,6 +421,9 @@ class ZoomToSelection(GeneralPlugin):
             # 如果 API 返回無效值（如選取 extra nodes），手動計算
             if not self._isValidBounds(bounds):
                 bounds = self._calculateSelectionBounds(layer)
+
+            self._isMultiline = False
+            self._accumulatedWidth = 0
 
         if not bounds:
             return False
@@ -457,12 +496,33 @@ class ZoomToSelection(GeneralPlugin):
             print(f"   選取中心點 (font units)=({self._zoomCenterX:.1f}, {self._zoomCenterY:.1f})")
             print(f"   scale={self._zoomScale:.3f}")
 
-            # 計算選取中心在 view coordinates 的位置
-            # 統一的座標轉換公式（兩種模式都適用）
-            centerViewX = origin.x + (self._zoomCenterX * self._zoomScale)
-            centerViewY = origin.y + (self._zoomCenterY * self._zoomScale)
+            # 根據模式選擇不同的 X 軸計算方式
+            if self._isMultiline:
+                # 跨行模式：從行首（索引 0）開始計算
+                edit_view_width = Glyphs.editViewWidth
+                
+                # 步驟 1：反推行首（索引 0）在 view coordinates 的位置
+                lineStartViewX = origin.x - (self._accumulatedWidth * self._zoomScale)
+                
+                # 步驟 2：行中心 = 行首 + 行寬一半
+                centerViewX = lineStartViewX + ((edit_view_width / 2) * self._zoomScale)
 
-            print(f"   view 座標中心=({centerViewX:.1f}, {centerViewY:.1f})")
+                print("📍 跨行模式定位")
+                print(f"   累積寬度 (索引0到選取起點): {self._accumulatedWidth:.1f}")
+                print(f"   → 行首 view X (索引0): {lineStartViewX:.1f}")
+                print(f"   → 行中心 view X (索引0 + 行寬/2): {centerViewX:.1f}")
+            else:
+                # 單行模式：跟隨第一個字符的位置
+                centerViewX = origin.x + (self._zoomCenterX * self._zoomScale)
+
+                print("📍 單行模式定位")
+                print(f"   selectedLayerOrigin.x: {origin.x:.1f}")
+                print(f"   相對中心 (font units): {self._zoomCenterX:.1f}")
+                print(f"   view 座標中心 X: {centerViewX:.1f}")
+
+            # Y 軸計算相同
+            centerViewY = origin.y + (self._zoomCenterY * self._zoomScale)
+            print(f"   view 座標中心 Y: {centerViewY:.1f}")
 
             # 設定 viewPort
             tab.viewPort = NSMakeRect(
@@ -472,7 +532,7 @@ class ZoomToSelection(GeneralPlugin):
                 viewPort.size.height
             )
 
-            print(f"✅ viewPort 已設定: x={centerViewX - viewPort.size.width / 2:.1f}, y={centerViewY - viewPort.size.height / 2:.1f}\n")
+            print("✅ viewPort 已設定\n")
 
         except Exception as e:
             print(f"Zoom to Selection (Delayed) Error: {e}")
